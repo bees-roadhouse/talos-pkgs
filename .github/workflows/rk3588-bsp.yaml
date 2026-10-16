@@ -13,9 +13,9 @@ name: rk3588-bsp
 
 on:
   push:
-    branches: [main]
+    branches: [talos-v1.14]
   pull_request:
-    branches: [main]
+    branches: [talos-v1.14]
   workflow_dispatch:
 
 concurrency:

@@ -8,9 +8,12 @@ blitter (`/dev/rga`) exist only in the BSP kernels, mainline has no RK3588
 encoder, and nectar's transcoder (jellyfin-ffmpeg with `--enable-rkmpp
 --enable-rkrga`) needs both. Decided by Nate on 2026-10-16.
 
-`main` here is pkgs at `2f03590` (the commit Talos v1.14.0 was built from)
-plus the change below. Upstream's own workflows run on Sidero's self-hosted
-runners and were removed.
+The default branch, `talos-v1.14`, is pkgs at `2f03590` (the commit Talos
+v1.14.0 was built from) plus the change below; it plays the part `main` plays
+in our other repos. `main` is upstream's, left as forked: the org's
+default-branch ruleset refuses rewriting it, and a branch per Talos minor
+release is what an upgrade to 1.15 will need anyway. Upstream's own workflows
+run on Sidero's self-hosted runners and were removed.
 
 ## What changed against pkgs
 
