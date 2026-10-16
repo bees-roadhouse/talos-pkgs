@@ -4,7 +4,7 @@
 Reads an installer image exported to a tar (`crane export --platform
 linux/arm64 <ref> installer.tar`) and checks, from the bytes alone:
 
-  - the kernel banner inside the UKI's zboot payload: release 6.1, rockchip;
+  - the kernel banner inside the UKI's zboot payload: release 6.12, rockchip;
   - the kernel config, recovered from the same payload's IKCONFIG blob: the
     MPP and RGA drivers, the RK3588 SoC glue, and a sample of the options
     Talos needs (the full hardening set is enforced by the pkgs build itself);
@@ -18,7 +18,7 @@ control: run against it, the BSP checks must fail.
 Needs `zstd` on PATH (and `xz` if the kernel payload is xz). Exits non-zero
 if any check fails, and prints one line per check either way.
 
-Usage: inspect_installer.py installer.tar [--expect-release-prefix 6.1.]
+Usage: inspect_installer.py installer.tar [--expect-release-prefix 6.12.]
 """
 
 import argparse
@@ -68,7 +68,6 @@ TALOS_OPTIONS = {
     "CONFIG_STACKPROTECTOR_STRONG": "y",
     "CONFIG_STRICT_KERNEL_RWX": "y",
     "CONFIG_RANDOMIZE_BASE": "y",
-    "CONFIG_DEBUG_CREDENTIALS": "y",
     "CONFIG_IKCONFIG": "y",
 }
 
@@ -171,7 +170,7 @@ def extensions_yaml(initrd: bytes) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("tar")
-    ap.add_argument("--expect-release-prefix", default="6.1.")
+    ap.add_argument("--expect-release-prefix", default="6.12.")
     args = ap.parse_args()
 
     files = {}

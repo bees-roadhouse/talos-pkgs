@@ -1,0 +1,193 @@
+From a08557d19ef41439feaa3137687d8b317c1a359a Mon Sep 17 00:00:00 2001
+From: Christian Brauner <brauner@kernel.org>
+Date: Mon, 14 Oct 2024 11:40:57 +0200
+Subject: [PATCH] ovl: specify layers via file descriptors
+
+Currently overlayfs only allows specifying layers through path names.
+This is inconvenient for users such as systemd that want to assemble an
+overlayfs mount purely based on file descriptors.
+
+This enables user to specify both:
+
+    fsconfig(fd_overlay, FSCONFIG_SET_FD, "upperdir+", NULL, fd_upper);
+    fsconfig(fd_overlay, FSCONFIG_SET_FD, "workdir+",  NULL, fd_work);
+    fsconfig(fd_overlay, FSCONFIG_SET_FD, "lowerdir+", NULL, fd_lower1);
+    fsconfig(fd_overlay, FSCONFIG_SET_FD, "lowerdir+", NULL, fd_lower2);
+
+in addition to:
+
+    fsconfig(fd_overlay, FSCONFIG_SET_STRING, "upperdir+", "/upper",  0);
+    fsconfig(fd_overlay, FSCONFIG_SET_STRING, "workdir+",  "/work",   0);
+    fsconfig(fd_overlay, FSCONFIG_SET_STRING, "lowerdir+", "/lower1", 0);
+    fsconfig(fd_overlay, FSCONFIG_SET_STRING, "lowerdir+", "/lower2", 0);
+
+Link: https://lore.kernel.org/r/20241014-work-overlayfs-v3-2-32b3fed1286e@kernel.org
+Reviewed-by: Amir Goldstein <amir73il@gmail.com>
+Signed-off-by: Christian Brauner <brauner@kernel.org>
+---
+ fs/overlayfs/params.c | 116 +++++++++++++++++++++++++++++++++---------
+ 1 file changed, 91 insertions(+), 25 deletions(-)
+
+diff --git a/fs/overlayfs/params.c b/fs/overlayfs/params.c
+index e42546c6c5dfbe..1115c22deca0cb 100644
+--- a/fs/overlayfs/params.c
++++ b/fs/overlayfs/params.c
+@@ -141,10 +141,10 @@ static int ovl_verity_mode_def(void)
+ 
+ const struct fs_parameter_spec ovl_parameter_spec[] = {
+ 	fsparam_string_empty("lowerdir",    Opt_lowerdir),
+-	fsparam_string("lowerdir+",         Opt_lowerdir_add),
+-	fsparam_string("datadir+",          Opt_datadir_add),
+-	fsparam_string("upperdir",          Opt_upperdir),
+-	fsparam_string("workdir",           Opt_workdir),
++	fsparam_file_or_string("lowerdir+", Opt_lowerdir_add),
++	fsparam_file_or_string("datadir+",  Opt_datadir_add),
++	fsparam_file_or_string("upperdir",  Opt_upperdir),
++	fsparam_file_or_string("workdir",   Opt_workdir),
+ 	fsparam_flag("default_permissions", Opt_default_permissions),
+ 	fsparam_enum("redirect_dir",        Opt_redirect_dir, ovl_parameter_redirect_dir),
+ 	fsparam_enum("index",               Opt_index, ovl_parameter_bool),
+@@ -367,40 +367,100 @@ static void ovl_add_layer(struct fs_context *fc, enum ovl_opt layer,
+ 	}
+ }
+ 
+-static int ovl_parse_layer(struct fs_context *fc, const char *layer_name, enum ovl_opt layer)
++static inline bool is_upper_layer(enum ovl_opt layer)
++{
++	return layer == Opt_upperdir || layer == Opt_workdir;
++}
++
++/* Handle non-file descriptor-based layer options that require path lookup. */
++static inline int ovl_kern_path(const char *layer_name, struct path *layer_path,
++				enum ovl_opt layer)
+ {
+-	char *name = kstrdup(layer_name, GFP_KERNEL);
+-	bool upper = (layer == Opt_upperdir || layer == Opt_workdir);
+-	struct path path;
+ 	int err;
+ 
++	switch (layer) {
++	case Opt_upperdir:
++		fallthrough;
++	case Opt_workdir:
++		fallthrough;
++	case Opt_lowerdir:
++		err = ovl_mount_dir(layer_name, layer_path);
++		break;
++	case Opt_lowerdir_add:
++		fallthrough;
++	case Opt_datadir_add:
++		err = ovl_mount_dir_noesc(layer_name, layer_path);
++		break;
++	default:
++		WARN_ON_ONCE(true);
++		err = -EINVAL;
++	}
++
++	return err;
++}
++
++static int ovl_do_parse_layer(struct fs_context *fc, const char *layer_name,
++			      struct path *layer_path, enum ovl_opt layer)
++{
++	char *name __free(kfree) = kstrdup(layer_name, GFP_KERNEL);
++	bool upper;
++	int err = 0;
++
+ 	if (!name)
+ 		return -ENOMEM;
+ 
+-	if (upper || layer == Opt_lowerdir)
+-		err = ovl_mount_dir(name, &path);
+-	else
+-		err = ovl_mount_dir_noesc(name, &path);
++	upper = is_upper_layer(layer);
++	err = ovl_mount_dir_check(fc, layer_path, layer, name, upper);
+ 	if (err)
+-		goto out_free;
+-
+-	err = ovl_mount_dir_check(fc, &path, layer, name, upper);
+-	if (err)
+-		goto out_put;
++		return err;
+ 
+ 	if (!upper) {
+ 		err = ovl_ctx_realloc_lower(fc);
+ 		if (err)
+-			goto out_put;
++			return err;
+ 	}
+ 
+ 	/* Store the user provided path string in ctx to show in mountinfo */
+-	ovl_add_layer(fc, layer, &path, &name);
++	ovl_add_layer(fc, layer, layer_path, &name);
++	return err;
++}
++
++static int ovl_parse_layer(struct fs_context *fc, struct fs_parameter *param,
++			   enum ovl_opt layer)
++{
++	struct path layer_path __free(path_put) = {};
++	int err = 0;
++
++	switch (param->type) {
++	case fs_value_is_string:
++		err = ovl_kern_path(param->string, &layer_path, layer);
++		if (err)
++			return err;
++		err = ovl_do_parse_layer(fc, param->string, &layer_path, layer);
++		break;
++	case fs_value_is_file: {
++		char *buf __free(kfree);
++		char *layer_name;
++
++		buf = kmalloc(PATH_MAX, GFP_KERNEL_ACCOUNT);
++		if (!buf)
++			return -ENOMEM;
++
++		layer_path = param->file->f_path;
++		path_get(&layer_path);
++
++		layer_name = d_path(&layer_path, buf, PATH_MAX);
++		if (IS_ERR(layer_name))
++			return PTR_ERR(layer_name);
++
++		err = ovl_do_parse_layer(fc, layer_name, &layer_path, layer);
++		break;
++	}
++	default:
++		WARN_ON_ONCE(true);
++		err = -EINVAL;
++	}
+ 
+-out_put:
+-	path_put(&path);
+-out_free:
+-	kfree(name);
+ 	return err;
+ }
+ 
+@@ -474,7 +534,13 @@ static int ovl_parse_param_lowerdir(const char *name, struct fs_context *fc)
+ 
+ 	iter = dup;
+ 	for (nr = 0; nr < nr_lower; nr++) {
+-		err = ovl_parse_layer(fc, iter, Opt_lowerdir);
++		struct path path __free(path_put) = {};
++
++		err = ovl_kern_path(iter, &path, Opt_lowerdir);
++		if (err)
++			goto out_err;
++
++		err = ovl_do_parse_layer(fc, iter, &path, Opt_lowerdir);
+ 		if (err)
+ 			goto out_err;
+ 
+@@ -555,7 +621,7 @@ static int ovl_parse_param(struct fs_context *fc, struct fs_parameter *param)
+ 	case Opt_datadir_add:
+ 	case Opt_upperdir:
+ 	case Opt_workdir:
+-		err = ovl_parse_layer(fc, param->string, opt);
++		err = ovl_parse_layer(fc, param, opt);
+ 		break;
+ 	case Opt_default_permissions:
+ 		config->default_permissions = true;

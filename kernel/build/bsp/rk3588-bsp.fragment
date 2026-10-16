@@ -1,4 +1,4 @@
-# Rockchip BSP 6.1 options layered on top of Talos's own arm64 config.
+# Rockchip BSP options layered on top of Talos's own arm64 config.
 # Scope: headless RK3588 node (Orange Pi 5 Plus) with MPP and RGA for nectar's
 # transcoder. Display, GPU, NPU, camera, audio and wireless are left off on
 # purpose: none of them are used, and every vendor driver turned on is another
@@ -67,10 +67,6 @@ CONFIG_DMABUF_HEAPS_CMA=y
 # CONFIG_MALI_BIFROST is not set
 # CONFIG_MALI_VALHALL is not set
 # CONFIG_ROCKCHIP_RKNPU is not set
-
-# Hardening that 6.1 still carries and Talos's 6.18 config no longer names
-# (removed upstream in 6.6); kernel-hardening-checker asks for it on 6.1.
-CONFIG_DEBUG_CREDENTIALS=y
 
 # This kernel only ever boots RK3588 boards. Every other SoC family Talos's
 # generic arm64 kernel carries is switched off: their drivers are untested in

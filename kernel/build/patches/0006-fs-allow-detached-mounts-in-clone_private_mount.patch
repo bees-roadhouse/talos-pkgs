@@ -1,0 +1,49 @@
+fs: allow detached mounts in clone_private_mount()
+
+Backport of upstream db04662e2f4f ("fs: allow detached mounts in
+clone_private_mount()", v6.15), adapted to 6.12: this tree still takes
+namespace_sem with down_read()/goto and carries the stable CAP_SYS_ADMIN
+check, so only the mount checks change, and c0dbd11ada2c (its locking fix)
+does not apply. check_for_nsfs_mounts() is forward-declared rather than
+moved.
+
+Talos v1.14 builds its writable /etc overlay from detached mounts made with
+open_tree(OPEN_TREE_CLONE) and passes them to overlayfs as layer fds;
+without this, overlayfs fails with "failed to clone upperpath" and
+machined exits at boot.
+
+--- a/fs/namespace.c
++++ b/fs/namespace.c
+@@ -2271,6 +2271,8 @@
+  *
+  * Release with mntput().
+  */
++static bool check_for_nsfs_mounts(struct mount *subtree);
++
+ struct vfsmount *clone_private_mount(const struct path *path)
+ {
+ 	struct mount *old_mnt = real_mount(path->mnt);
+@@ -2280,8 +2282,21 @@
+ 	if (IS_MNT_UNBINDABLE(old_mnt))
+ 		goto invalid;
+ 
+-	if (!check_mnt(old_mnt))
+-		goto invalid;
++	if (mnt_has_parent(old_mnt)) {
++		if (!check_mnt(old_mnt))
++			goto invalid;
++	} else {
++		if (!is_mounted(&old_mnt->mnt))
++			goto invalid;
++
++		/* Make sure this isn't something purely kernel internal. */
++		if (!is_anon_ns(old_mnt->mnt_ns))
++			goto invalid;
++
++		/* Make sure we don't create mount namespace loops. */
++		if (!check_for_nsfs_mounts(old_mnt))
++			goto invalid;
++	}
+ 
+ 	if (!ns_capable(old_mnt->mnt_ns->user_ns, CAP_SYS_ADMIN)) {
+ 		up_read(&namespace_sem);

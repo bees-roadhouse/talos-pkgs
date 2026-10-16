@@ -1,0 +1,70 @@
+From c2f8fde8689272a55b9319b69dfe7e8f0e2e9dfe Mon Sep 17 00:00:00 2001
+From: Christian Brauner <brauner@kernel.org>
+Date: Mon, 14 Oct 2024 11:40:56 +0200
+Subject: [PATCH] fs: add helper to use mount option as path or fd
+
+Allow filesystems to use a mount option either as a
+file or path.
+
+Link: https://lore.kernel.org/r/20241014-work-overlayfs-v3-1-32b3fed1286e@kernel.org
+Reviewed-by: Amir Goldstein <amir73il@gmail.com>
+Signed-off-by: Christian Brauner <brauner@kernel.org>
+---
+ fs/fs_parser.c            | 20 ++++++++++++++++++++
+ include/linux/fs_parser.h |  5 ++++-
+ 2 files changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/fs/fs_parser.c b/fs/fs_parser.c
+index 24727ec34e5aa4..8f583b814e6e43 100644
+--- a/fs/fs_parser.c
++++ b/fs/fs_parser.c
+@@ -308,6 +308,26 @@ int fs_param_is_fd(struct p_log *log, const struct fs_parameter_spec *p,
+ }
+ EXPORT_SYMBOL(fs_param_is_fd);
+ 
++int fs_param_is_file_or_string(struct p_log *log,
++			       const struct fs_parameter_spec *p,
++			       struct fs_parameter *param,
++			       struct fs_parse_result *result)
++{
++	switch (param->type) {
++	case fs_value_is_string:
++		return fs_param_is_string(log, p, param, result);
++	case fs_value_is_file:
++		result->uint_32 = param->dirfd;
++		if (result->uint_32 <= INT_MAX)
++			return 0;
++		break;
++	default:
++		break;
++	}
++	return fs_param_bad_value(log, param);
++}
++EXPORT_SYMBOL(fs_param_is_file_or_string);
++
+ int fs_param_is_uid(struct p_log *log, const struct fs_parameter_spec *p,
+ 		    struct fs_parameter *param, struct fs_parse_result *result)
+ {
+diff --git a/include/linux/fs_parser.h b/include/linux/fs_parser.h
+index 6cf713a7e6c6fc..3cef566088fcf7 100644
+--- a/include/linux/fs_parser.h
++++ b/include/linux/fs_parser.h
+@@ -28,7 +28,8 @@ typedef int fs_param_type(struct p_log *,
+  */
+ fs_param_type fs_param_is_bool, fs_param_is_u32, fs_param_is_s32, fs_param_is_u64,
+ 	fs_param_is_enum, fs_param_is_string, fs_param_is_blob, fs_param_is_blockdev,
+-	fs_param_is_path, fs_param_is_fd, fs_param_is_uid, fs_param_is_gid;
++	fs_param_is_path, fs_param_is_fd, fs_param_is_uid, fs_param_is_gid,
++	fs_param_is_file_or_string;
+ 
+ /*
+  * Specification of the type of value a parameter wants.
+@@ -133,6 +134,8 @@ static inline bool fs_validate_description(const char *name,
+ #define fsparam_bdev(NAME, OPT)	__fsparam(fs_param_is_blockdev, NAME, OPT, 0, NULL)
+ #define fsparam_path(NAME, OPT)	__fsparam(fs_param_is_path, NAME, OPT, 0, NULL)
+ #define fsparam_fd(NAME, OPT)	__fsparam(fs_param_is_fd, NAME, OPT, 0, NULL)
++#define fsparam_file_or_string(NAME, OPT) \
++				__fsparam(fs_param_is_file_or_string, NAME, OPT, 0, NULL)
+ #define fsparam_uid(NAME, OPT) __fsparam(fs_param_is_uid, NAME, OPT, 0, NULL)
+ #define fsparam_gid(NAME, OPT) __fsparam(fs_param_is_gid, NAME, OPT, 0, NULL)
+ 

@@ -166,6 +166,11 @@ jobs:
 
   installer:
     needs: [kernel, overlay, imager]
+    # Off until the kernel boots Talos v1.14 (roadhouse/README.md, "Status"):
+    # an installer in the registry is one `talosctl upgrade` from a node, so
+    # none is published while it is known not to boot. Set the repository
+    # variable RK3588_BSP_INSTALLER=true to build it.
+    if: vars.RK3588_BSP_INSTALLER == 'true'
     runs-on: ubuntu-24.04-arm
     outputs:
       ref: ${{ steps.push.outputs.ref }}
@@ -190,12 +195,15 @@ jobs:
           ext_args=()
           for e in ${EXTENSIONS}; do ext_args+=(--system-extension-image "$e"); done
           mkdir -p _out
+          # key=value options reach the overlay as strings, and spi_boot is a
+          # bool, so the options go in as YAML (the "@file" form).
+          echo "spi_boot: true" > _out/overlay-options.yaml
           docker run --rm --privileged --network=host -v /dev:/dev -v "$PWD/_out:/out" "${IMAGER}" installer \
             --arch arm64 \
             --base-installer-image "ghcr.io/siderolabs/installer-base:${TALOS_VERSION}" \
             --overlay-image "${OVERLAY}" \
             --overlay-name orangepi-5-plus \
-            --overlay-option spi_boot=true \
+            --overlay-option @/out/overlay-options.yaml \
             --extra-kernel-arg nvme_core.default_ps_max_latency_us=0 \
             --extra-kernel-arg pcie_aspm=off \
             "${ext_args[@]}"
