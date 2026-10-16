@@ -15,25 +15,26 @@ default-branch ruleset refuses rewriting it, and a branch per Talos minor
 release is what an upgrade to 1.15 will need anyway. Upstream's own workflows
 run on Sidero's self-hosted runners and were removed.
 
-## Status: the kernel builds; Talos v1.14 does not boot on it yet
+## Status: Talos v1.14 reaches maintenance mode on BSP 6.12 in QEMU
 
 Talos v1.14's machined builds its writable `/etc` from detached mounts handed
 to overlayfs as file descriptors, then bind-mounts the overlay with
 `open_tree()`. Those are mount-API features from Linux 6.8 to 6.15, and both
-BSP trees are older. Each was booted in QEMU (`-M virt`, the CI imager's
-initramfs) until machined's first phase failed:
+BSP trees are older. Booting each in QEMU (`-M virt`, the imager's initramfs):
 
-| Kernel | Builds | Where Talos stops |
-|---|---|---|
-| BSP 6.1 (`rk-6.1-rkr7.2`) | yes | `FSCONFIG_SET_FD ... operation not supported: key="lowerdir+"` (6.8). 6.1's overlayfs is not even on the new mount API (6.5). |
-| BSP 6.12 (`rk-6.12-rkr1`) | yes | first `lowerdir+` by fd (6.13), then O_PATH fds in fsconfig (6.15), then cloning a detached upper (6.15): all three backported below, then `open_tree(OPEN_TREE_CLONE)` on the detached overlay mount fails with EINVAL. |
+| Kernel | Result |
+|---|---|
+| BSP 6.1 (`rk-6.1-rkr7.2`), branch `dead-end/bsp-6.1` | builds; machined stops at `FSCONFIG_SET_FD ... operation not supported: key="lowerdir+"` (6.8). 6.1's overlayfs is not on the new mount API at all (6.5), so this route was dropped. |
+| BSP 6.12 (`rk-6.12-rkr1`) + patches `0003`–`0007` | builds; Talos passes all its boot phases up to the config phase and enters **maintenance mode**: udevd, machined, containerd, auditd and syslogd are healthy and apid waits for a config. |
 
-The next step is the 6.15 "detached mounts" series in `fs/namespace.c`
-(upstream `3b0cdba4da55` through `064fe6e233e8`, about eleven commits) on a
-file this tree has diverged from. Machined dies in phase 1 of 9, so more gaps
-are likely after it. That is the wall: carrying a growing VFS backport series
-on a vendor tree, redone for every Talos release, which tracks ever newer
-kernels. The installer job stays off until that changes.
+What QEMU cannot show: the RK3588 hardware itself (MPP, RGA, VOP2, PCIe,
+the PMIC) and the SPI u-boot booting this kernel. Under QEMU the BSP's
+Rockchip DRM driver must be skipped
+(`initcall_blacklist=__initstub__kmod_rockchipdrm__869_3458_rockchip_drm_init6`):
+it asks the firmware for the DRAM map with an SMC at init, and QEMU's virt
+machine has no EL3 to answer it, so the instruction traps. On the board,
+TF-A answers unknown SiP calls with an error, and the driver carries on
+without the map (`rockchip_gem_get_ddr_info()` checks for NULL).
 
 ## What changed against pkgs
 
@@ -65,6 +66,9 @@ kernels. The installer job stays off until that changes.
     overlayfs layers by fd, O_PATH fds in `FSCONFIG_SET_FD`.
   - `0006`: upstream `db04662e2f4f` (6.15), adapted to 6.12: detached mounts
     in `clone_private_mount()`.
+  - `0007`: upstream's 6.15 detached-mounts series (nine commits, listed in
+    the patch with each adaptation), so `open_tree(OPEN_TREE_CLONE)` works on
+    a detached mount.
 
 ## What CI builds
 
@@ -77,7 +81,7 @@ kernel takes about 45 minutes), pushes to
 | `kernel` | this tree's `kernel` target |
 | `sbc-rockchip` | upstream's sbc-rockchip v0.2.1 overlay with the BSP dtb swapped in (`overlay/Containerfile`) |
 | `imager` | siderolabs/talos v1.14.0 built against that kernel; `hack/modules-arm64.txt` fitted to the BSP module tree by `talos/modules-arm64.py` |
-| `installer` | **off** (repository variable `RK3588_BSP_INSTALLER`): the imager's `installer` output with the overlay (`spi_boot: true`), the nodes' two extra kernel args and their three extensions |
+| `installer` | built when the repository variable `RK3588_BSP_INSTALLER` is `true`: the imager's `installer` output with the overlay (`spi_boot: true`), the nodes' two extra kernel args and their three extensions |
 
 The talos binaries keep version `v1.14.0` and upstream's compiled-in image
 references; only the image names and tags are ours.
@@ -90,7 +94,7 @@ checks, which is how to tell it actually looked.
 
 ## Booting it in QEMU
 
-The test that found the wall, with `vmlinuz` and `initramfs.xz` taken from
+The boot test, with `vmlinuz` and `initramfs.xz` taken from
 the imager image's `/usr/install/arm64/`:
 
 ```sh
@@ -101,9 +105,10 @@ qemu-system-aarch64 -M virt -cpu cortex-a76 -smp 4 -m 4096 -nographic \
   -append "talos.platform=metal console=ttyAMA0 selinux=1 module.sig_enforce=1"
 ```
 
-Success looks like Talos reaching maintenance mode (no machine config); the
-failures above appear as `controller runtime goroutine error` within 20
-seconds.
+Add Talos's own arguments (`slab_nomerge pti=on`; without them its KSPP
+check fails phase 1) and the `initcall_blacklist` above. Success looks like
+`entering maintenance service` about 30 seconds in; a kernel that cannot run
+Talos shows `controller runtime goroutine error` instead.
 
 ## Regenerating the config
 

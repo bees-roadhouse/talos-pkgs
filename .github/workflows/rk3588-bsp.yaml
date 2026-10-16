@@ -166,10 +166,10 @@ jobs:
 
   installer:
     needs: [kernel, overlay, imager]
-    # Off until the kernel boots Talos v1.14 (roadhouse/README.md, "Status"):
-    # an installer in the registry is one `talosctl upgrade` from a node, so
-    # none is published while it is known not to boot. Set the repository
-    # variable RK3588_BSP_INSTALLER=true to build it.
+    # Gated: an installer in the registry is one `talosctl upgrade` from a
+    # node, so it is only published while the repository variable
+    # RK3588_BSP_INSTALLER is true, which means the kernel has reached Talos
+    # maintenance mode in QEMU (roadhouse/README.md, "Status").
     if: vars.RK3588_BSP_INSTALLER == 'true'
     runs-on: ubuntu-24.04-arm
     outputs:

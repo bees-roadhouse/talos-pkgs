@@ -1,0 +1,496 @@
+fs: detached mounts series from 6.15, adapted to 6.12
+
+Backport of upstream's "fs: allow detached mounts" work (Christian Brauner,
+v6.15), so open_tree(OPEN_TREE_CLONE) works on a detached mount: Talos
+v1.14's machined binds its /etc overlay read-only that way and exits at
+boot with EINVAL without it.
+
+Upstream commits, in order:
+  3b0cdba4da55 fs: record sequence number of origin mount namespace
+  2f576220cd81 fs: add mnt_ns_empty() helper
+  043bc81efbfc fs: add assert for move_mount()
+  b73ec10a4587 fs: add fastpath for dissolve_on_fput()
+  9ed72af4e292 fs: add may_copy_tree()
+  c5c12f871a30 fs: create detached mounts from detached mounts
+  21107723831e fs: mount detached mounts onto detached mounts
+  f8b6cd66e479 fs: allow creating detached mounts from fsmount() file descriptors
+  064fe6e233e8 mount: handle mount propagation for detached mount trees
+
+Adaptations for 6.12:
+  - seq_origin is added beside seq in struct mnt_namespace (the context
+    differs).
+  - VFS_WARN_ON_ONCE() is defined as WARN_ON_ONCE() in fs/mount.h when the
+    tree does not have it.
+  - may_copy_tree() checks nsfs only: pidfs bind-mounts arrived in 6.13.
+  - may_use_mount() is placed before do_move_mount() (the context differs).
+  - f9fde814de37 (getname_maybe_null() in move_mount()) and its fix
+    99b6a1dee086 are left out: 6.12 has no getname_maybe_null(), and Talos
+    passes an empty path with MOVE_MOUNT_F_EMPTY_PATH, which 6.12 handles.
+
+--- a/fs/mount.h
++++ b/fs/mount.h
+@@ -5,6 +5,17 @@
+ #include <linux/ns_common.h>
+ #include <linux/fs_pin.h>
+ 
++/* 6.15 defines this in include/linux/fs.h; 6.12 does not have it. */
++#ifndef VFS_WARN_ON_ONCE
++#define VFS_WARN_ON_ONCE(cond) WARN_ON_ONCE(cond)
++#endif
++
++extern struct list_head notify_list;
++
++typedef __u32 __bitwise mntns_flags_t;
++
++#define MNTNS_PROPAGATING	((__force mntns_flags_t)(1 << 0))
++
+ struct mnt_namespace {
+ 	struct ns_common	ns;
+ 	struct mount *	root;
+@@ -12,12 +23,14 @@
+ 	struct user_namespace	*user_ns;
+ 	struct ucounts		*ucounts;
+ 	u64			seq;	/* Sequence number to prevent loops */
++	u64			seq_origin; /* Sequence number of origin mount namespace */
+ 	wait_queue_head_t poll;
+ 	u64 event;
+ 	unsigned int		nr_mounts; /* # of mounts in the namespace */
+ 	unsigned int		pending_mounts;
+ 	struct rb_node		mnt_ns_tree_node; /* node in the mnt_ns_tree */
+ 	refcount_t		passive; /* number references not pinning @mounts */
++	mntns_flags_t		mntns_flags;
+ } __randomize_layout;
+ 
+ struct mnt_pcp {
+@@ -148,6 +161,11 @@
+ 	return !RB_EMPTY_NODE(&mnt->mnt_node);
+ }
+ 
++static inline bool mnt_ns_empty(const struct mnt_namespace *ns)
++{
++	return RB_EMPTY_ROOT(&ns->mounts);
++}
++
+ static inline void move_from_ns(struct mount *mnt, struct list_head *dt_list)
+ {
+ 	WARN_ON(!mnt_ns_attached(mnt));
+--- a/fs/namespace.c
++++ b/fs/namespace.c
+@@ -973,6 +973,17 @@
+ 	return mnt->mnt_ns == current->nsproxy->mnt_ns;
+ }
+ 
++static inline bool check_anonymous_mnt(struct mount *mnt)
++{
++	u64 seq;
++
++	if (!is_anon_ns(mnt->mnt_ns))
++		return false;
++
++	seq = mnt->mnt_ns->seq_origin;
++	return !seq || (seq == current->nsproxy->mnt_ns->seq);
++}
++
+ /*
+  * vfsmount lock must be held for write
+  */
+@@ -2210,22 +2221,75 @@
+ static void free_mnt_ns(struct mnt_namespace *);
+ static struct mnt_namespace *alloc_mnt_ns(struct user_namespace *, bool);
+ 
++static inline bool must_dissolve(struct mnt_namespace *mnt_ns)
++{
++	/*
++        * This mount belonged to an anonymous mount namespace
++        * but was moved to a non-anonymous mount namespace and
++        * then unmounted.
++        */
++	if (unlikely(!mnt_ns))
++		return false;
++
++	/*
++        * This mount belongs to a non-anonymous mount namespace
++        * and we know that such a mount can never transition to
++        * an anonymous mount namespace again.
++        */
++	if (!is_anon_ns(mnt_ns)) {
++		/*
++		 * A detached mount either belongs to an anonymous mount
++		 * namespace or a non-anonymous mount namespace. It
++		 * should never belong to something purely internal.
++		 */
++		VFS_WARN_ON_ONCE(mnt_ns == MNT_NS_INTERNAL);
++		return false;
++	}
++
++	return true;
++}
++
+ void dissolve_on_fput(struct vfsmount *mnt)
+ {
+ 	struct mnt_namespace *ns;
+-	namespace_lock();
+-	lock_mount_hash();
+-	ns = real_mount(mnt)->mnt_ns;
+-	if (ns) {
+-		if (is_anon_ns(ns))
+-			umount_tree(real_mount(mnt), UMOUNT_CONNECTED);
+-		else
+-			ns = NULL;
++	struct mount *m = real_mount(mnt);
++
++	scoped_guard(rcu) {
++		if (!must_dissolve(READ_ONCE(m->mnt_ns)))
++			return;
+ 	}
+-	unlock_mount_hash();
+-	namespace_unlock();
+-	if (ns)
+-		free_mnt_ns(ns);
++
++	scoped_guard(rwsem_write, &namespace_sem) {
++		ns = m->mnt_ns;
++		if (!must_dissolve(ns))
++			return;
++
++		/*
++		 * After must_dissolve() we know that this is a detached
++		 * mount in an anonymous mount namespace.
++		 *
++		 * Now when mnt_has_parent() reports that this mount
++		 * tree has a parent, we know that this anonymous mount
++		 * tree has been moved to another anonymous mount
++		 * namespace.
++		 *
++		 * So when closing this file we cannot unmount the mount
++		 * tree. This will be done when the file referring to
++		 * the root of the anonymous mount namespace will be
++		 * closed (It could already be closed but it would sync
++		 * on @namespace_sem and wait for us to finish.).
++		 */
++		if (mnt_has_parent(m))
++			return;
++
++		lock_mount_hash();
++		umount_tree(m, UMOUNT_CONNECTED);
++		unlock_mount_hash();
++	}
++
++	/* Make sure we notice when we leak mounts. */
++	VFS_WARN_ON_ONCE(!mnt_ns_empty(ns));
++	free_mnt_ns(ns);
+ }
+ 
+ void drop_collected_mounts(struct vfsmount *mnt)
+@@ -2787,6 +2851,68 @@
+ 	return err;
+ }
+ 
++/* may_copy_tree() - check if a mount tree can be copied
++ * @path: path to the mount tree to be copied
++ *
++ * This helper checks if the caller may copy the mount tree starting
++ * from @path->mnt. The caller may copy the mount tree under the
++ * following circumstances:
++ *
++ * (1) The caller is located in the mount namespace of the mount tree.
++ *     This also implies that the mount does not belong to an anonymous
++ *     mount namespace.
++ * (2) The caller tries to copy an nfs mount referring to a mount
++ *     namespace, i.e., the caller is trying to copy a mount namespace
++ *     entry from nsfs.
++ * (3) The caller tries to copy a pidfs mount referring to a pidfd.
++ * (4) The caller is trying to copy a mount tree that belongs to an
++ *     anonymous mount namespace.
++ *
++ *     For that to be safe, this helper enforces that the origin mount
++ *     namespace the anonymous mount namespace was created from is the
++ *     same as the caller's mount namespace by comparing the sequence
++ *     numbers.
++ *
++ *     This is not strictly necessary. The current semantics of the new
++ *     mount api enforce that the caller must be located in the same
++ *     mount namespace as the mount tree it interacts with. Using the
++ *     origin sequence number preserves these semantics even for
++ *     anonymous mount namespaces. However, one could envision extending
++ *     the api to directly operate across mount namespace if needed.
++ *
++ *     The ownership of a non-anonymous mount namespace such as the
++ *     caller's cannot change.
++ *     => We know that the caller's mount namespace is stable.
++ *
++ *     If the origin sequence number of the anonymous mount namespace is
++ *     the same as the sequence number of the caller's mount namespace.
++ *     => The owning namespaces are the same.
++ *
++ *     ==> The earlier capability check on the owning namespace of the
++ *         caller's mount namespace ensures that the caller has the
++ *         ability to copy the mount tree.
++ *
++ * Returns true if the mount tree can be copied, false otherwise.
++ */
++static inline bool may_copy_tree(struct path *path)
++{
++	struct mount *mnt = real_mount(path->mnt);
++	const struct dentry_operations *d_op;
++
++	if (check_mnt(mnt))
++		return true;
++
++	d_op = path->dentry->d_op;
++	if (d_op == &ns_dentry_operations)
++		return true;
++
++	if (!is_mounted(path->mnt))
++		return false;
++
++	return check_anonymous_mnt(mnt);
++}
++
++
+ static struct mount *__do_loopback(struct path *old_path, int recurse)
+ {
+ 	struct mount *mnt = ERR_PTR(-EINVAL), *old = real_mount(old_path->mnt);
+@@ -2794,7 +2920,7 @@
+ 	if (IS_MNT_UNBINDABLE(old))
+ 		return mnt;
+ 
+-	if (!check_mnt(old) && old_path->dentry->d_op != &ns_dentry_operations)
++	if (!may_copy_tree(old_path))
+ 		return mnt;
+ 
+ 	if (!recurse && __has_locked_children(old, old_path->dentry))
+@@ -2862,15 +2988,30 @@
+ 
+ static struct file *open_detached_copy(struct path *path, bool recursive)
+ {
+-	struct user_namespace *user_ns = current->nsproxy->mnt_ns->user_ns;
+-	struct mnt_namespace *ns = alloc_mnt_ns(user_ns, true);
++	struct mnt_namespace *ns, *mnt_ns = current->nsproxy->mnt_ns, *src_mnt_ns;
++	struct user_namespace *user_ns = mnt_ns->user_ns;
+ 	struct mount *mnt, *p;
+ 	struct file *file;
+ 
++	ns = alloc_mnt_ns(user_ns, true);
+ 	if (IS_ERR(ns))
+ 		return ERR_CAST(ns);
+ 
+ 	namespace_lock();
++
++	/*
++	 * Record the sequence number of the source mount namespace.
++	 * This needs to hold namespace_sem to ensure that the mount
++	 * doesn't get attached.
++	 */
++	if (is_mounted(path->mnt)) {
++		src_mnt_ns = real_mount(path->mnt)->mnt_ns;
++		if (is_anon_ns(src_mnt_ns))
++			ns->seq_origin = src_mnt_ns->seq_origin;
++		else
++			ns->seq_origin = src_mnt_ns->seq;
++	}
++
+ 	mnt = __do_loopback(path, recursive);
+ 	if (IS_ERR(mnt)) {
+ 		namespace_unlock();
+@@ -3329,6 +3470,55 @@
+ 	return 0;
+ }
+ 
++/* may_use_mount() - check if a mount tree can be used
++ * @mnt: vfsmount to be used
++ *
++ * This helper checks if the caller may use the mount tree starting
++ * from @path->mnt. The caller may use the mount tree under the
++ * following circumstances:
++ *
++ * (1) The caller is located in the mount namespace of the mount tree.
++ *     This also implies that the mount does not belong to an anonymous
++ *     mount namespace.
++ * (2) The caller is trying to use a mount tree that belongs to an
++ *     anonymous mount namespace.
++ *
++ *     For that to be safe, this helper enforces that the origin mount
++ *     namespace the anonymous mount namespace was created from is the
++ *     same as the caller's mount namespace by comparing the sequence
++ *     numbers.
++ *
++ *     The ownership of a non-anonymous mount namespace such as the
++ *     caller's cannot change.
++ *     => We know that the caller's mount namespace is stable.
++ *
++ *     If the origin sequence number of the anonymous mount namespace is
++ *     the same as the sequence number of the caller's mount namespace.
++ *     => The owning namespaces are the same.
++ *
++ *     ==> The earlier capability check on the owning namespace of the
++ *         caller's mount namespace ensures that the caller has the
++ *         ability to use the mount tree.
++ *
++ * Returns true if the mount tree can be used, false otherwise.
++ */
++static inline bool may_use_mount(struct mount *mnt)
++{
++	if (check_mnt(mnt))
++		return true;
++
++	/*
++	 * Make sure that noone unmounted the target path or somehow
++	 * managed to get their hands on something purely kernel
++	 * internal.
++	 */
++	if (!is_mounted(&mnt->mnt))
++		return false;
++
++	return check_anonymous_mnt(mnt);
++}
++
++
+ static int do_move_mount(struct path *old_path, struct path *new_path,
+ 			 bool beneath)
+ {
+@@ -3355,8 +3545,7 @@
+ 	ns = old->mnt_ns;
+ 
+ 	err = -EINVAL;
+-	/* The mountpoint must be in our namespace. */
+-	if (!check_mnt(p))
++	if (!may_use_mount(p))
+ 		goto out;
+ 
+ 	/* The thing moved must be mounted... */
+@@ -3367,6 +3556,32 @@
+ 	if (!(attached ? check_mnt(old) : is_anon_ns(ns)))
+ 		goto out;
+ 
++	if (is_anon_ns(ns)) {
++		/*
++		 * Ending up with two files referring to the root of the
++		 * same anonymous mount namespace would cause an error
++		 * as this would mean trying to move the same mount
++		 * twice into the mount tree which would be rejected
++		 * later. But be explicit about it right here.
++		 */
++		if ((is_anon_ns(p->mnt_ns) && ns == p->mnt_ns))
++			goto out;
++
++		/*
++		 * If this is an anonymous mount tree ensure that mount
++		 * propagation can detect mounts that were just
++		 * propagated to the target mount tree so we don't
++		 * propagate onto them.
++		 */
++		ns->mntns_flags |= MNTNS_PROPAGATING;
++	} else if (is_anon_ns(p->mnt_ns)) {
++		/*
++		 * Don't allow moving an attached mount tree to an
++		 * anonymous mount tree.
++		 */
++		goto out;
++	}
++
+ 	if (old->mnt.mnt_flags & MNT_LOCKED)
+ 		goto out;
+ 
+@@ -3409,6 +3624,9 @@
+ 	if (err)
+ 		goto out;
+ 
++	if (is_anon_ns(ns))
++		ns->mntns_flags &= ~MNTNS_PROPAGATING;
++
+ 	/* if the mount is moved, it should no longer be expire
+ 	 * automatically */
+ 	list_del_init(&old->mnt_expire);
+@@ -3417,10 +3635,13 @@
+ out:
+ 	unlock_mount(mp);
+ 	if (!err) {
+-		if (attached)
++		if (attached) {
+ 			mntput_no_expire(parent);
+-		else
++		} else {
++			/* Make sure we notice when we leak mounts. */
++			VFS_WARN_ON_ONCE(!mnt_ns_empty(ns));
+ 			free_mnt_ns(ns);
++		}
+ 	}
+ 	return err;
+ }
+@@ -5205,7 +5426,7 @@
+ 	 * We have to find the first mount in our ns and use that, however it
+ 	 * may not exist, so handle that properly.
+ 	 */
+-	if (RB_EMPTY_ROOT(&ns->mounts))
++	if (mnt_ns_empty(ns))
+ 		return -ENOENT;
+ 
+ 	first = child = ns->root;
+@@ -5229,7 +5450,7 @@
+ 	int err;
+ 
+ 	/* Has the namespace already been emptied? */
+-	if (mnt_ns_id && RB_EMPTY_ROOT(&ns->mounts))
++	if (mnt_ns_id && mnt_ns_empty(ns))
+ 		return -ENOENT;
+ 
+ 	s->mnt = lookup_mnt_in_ns(mnt_id, ns);
+--- a/fs/pnode.c
++++ b/fs/pnode.c
+@@ -150,7 +150,7 @@
+ 					 struct mount *origin)
+ {
+ 	/* are there any slaves of this mount? */
+-	if (!IS_MNT_NEW(m) && !list_empty(&m->mnt_slave_list))
++	if (!IS_MNT_PROPAGATED(m) && !list_empty(&m->mnt_slave_list))
+ 		return first_slave(m);
+ 
+ 	while (1) {
+@@ -174,7 +174,7 @@
+ 	 * Advance m such that propagation_next will not return
+ 	 * the slaves of m.
+ 	 */
+-	if (!IS_MNT_NEW(m) && !list_empty(&m->mnt_slave_list))
++	if (!IS_MNT_PROPAGATED(m) && !list_empty(&m->mnt_slave_list))
+ 		m = last_slave(m);
+ 
+ 	return m;
+@@ -185,7 +185,7 @@
+ 	while (1) {
+ 		while (1) {
+ 			struct mount *next;
+-			if (!IS_MNT_NEW(m) && !list_empty(&m->mnt_slave_list))
++			if (!IS_MNT_PROPAGATED(m) && !list_empty(&m->mnt_slave_list))
+ 				return first_slave(m);
+ 			next = next_peer(m);
+ 			if (m->mnt_group_id == origin->mnt_group_id) {
+@@ -226,7 +226,7 @@
+ 	struct mount *child;
+ 	int type;
+ 	/* skip ones added by this propagate_mnt() */
+-	if (IS_MNT_NEW(m))
++	if (IS_MNT_PROPAGATED(m))
+ 		return 0;
+ 	/* skip if mountpoint isn't covered by it */
+ 	if (!is_subdir(dest_mp->m_dentry, m->mnt.mnt_root))
+@@ -380,7 +380,7 @@
+ 	if (!IS_MNT_SHARED(from))
+ 		return false;
+ 
+-	if (IS_MNT_NEW(to))
++	if (IS_MNT_PROPAGATED(to))
+ 		return false;
+ 
+ 	if (to->mnt.mnt_root != mp->m_dentry)
+--- a/fs/pnode.h
++++ b/fs/pnode.h
+@@ -12,7 +12,7 @@
+ 
+ #define IS_MNT_SHARED(m) ((m)->mnt.mnt_flags & MNT_SHARED)
+ #define IS_MNT_SLAVE(m) ((m)->mnt_master)
+-#define IS_MNT_NEW(m)  (!(m)->mnt_ns || is_anon_ns((m)->mnt_ns))
++#define IS_MNT_PROPAGATED(m) (!(m)->mnt_ns || ((m)->mnt_ns->mntns_flags & MNTNS_PROPAGATING))
+ #define CLEAR_MNT_SHARED(m) ((m)->mnt.mnt_flags &= ~MNT_SHARED)
+ #define IS_MNT_UNBINDABLE(m) ((m)->mnt.mnt_flags & MNT_UNBINDABLE)
+ #define IS_MNT_MARKED(m) ((m)->mnt.mnt_flags & MNT_MARKED)
