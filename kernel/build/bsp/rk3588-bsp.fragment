@@ -58,12 +58,20 @@ CONFIG_ROCKCHIP_MPP_VDPP=y
 CONFIG_ROCKCHIP_MULTI_RGA=y
 CONFIG_DMABUF_HEAPS_CMA=y
 
-# Off: DRM as a whole, so the vendor display stack (VOP2/HDMI), the GPU and
-# every DRM driver Talos carries for PCIe cards. Under Talos's clang the BSP's
-# DRM core does not build (drm_gpuvm, the panthor backport and amdgpu all fail),
-# the console is serial (ttyS2 at 1500000), and nectar needs MPP and RGA, not
-# /dev/dri.
-# CONFIG_DRM is not set
+# DRM, for the /dev/dri render node nectar's ffmpeg uses (rkmpp hands frames
+# over as DRM PRIME buffers). The BSP's Rockchip display driver registers a
+# render node itself (DRIVER_RENDER), so no GPU driver is needed: the board
+# dts describes the Mali for Rockchip's kbase, and panthor would also need
+# CSF firmware Talos does not ship. Discrete-GPU drivers Talos carries for
+# PCIe cards are off: amdgpu does not build in the BSP.
+CONFIG_DRM=y
+CONFIG_DRM_ROCKCHIP=y
+CONFIG_ROCKCHIP_VOP2=y
+# CONFIG_DRM_PANTHOR is not set
+# CONFIG_DRM_AMDGPU is not set
+# CONFIG_DRM_RADEON is not set
+# CONFIG_DRM_NOUVEAU is not set
+# CONFIG_DRM_XE is not set
 # CONFIG_MALI_BIFROST is not set
 # CONFIG_MALI_VALHALL is not set
 # CONFIG_ROCKCHIP_RKNPU is not set

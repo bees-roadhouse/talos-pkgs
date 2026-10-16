@@ -41,13 +41,16 @@ kernels. The installer job stays off until that changes.
   `linux-rockchip` at a pinned commit of `rk-6.12-rkr1` (Linux 6.12.69,
   Armbian's `vendor-next`), which is the Rockchip BSP plus the Orange Pi 5
   Plus device tree, with MPP and RGA. `rk-6.1-rkr7.2` (Armbian's `vendor`)
-  is the first commit on this branch and builds too.
+  was tried first and is kept on branch `dead-end/bsp-6.1` so nobody walks
+  it again: it builds, but Talos v1.14 cannot run on 6.1 at all.
 - **Kernel config** (`kernel/build/config-arm64`): generated, never edited.
   `kernel/build/bsp/make-config.sh` takes Talos's own v1.14.0 arm64 config
   (`bsp/talos-1.14.0-config-arm64`), lets `olddefconfig` drop what the BSP
   tree does not know, and merges `bsp/rk3588-bsp.fragment` on top: the BSP's
-  names for the RK3588 SoC glue, PMIC, PCIe, MPP and RGA, with DRM and every
-  non-Rockchip SoC family switched off. The fragment says why for each block.
+  names for the RK3588 SoC glue, PMIC, PCIe, MPP, RGA and the Rockchip display
+  driver (whose render node is nectar's `/dev/dri`), with the discrete-GPU
+  drivers and every non-Rockchip SoC family switched off. The fragment says
+  why for each block.
 - **Hardening check** (`kernel/build/scripts/filter-hardened-check.py`): the
   same check Talos runs, with five arm64 options ignored because 6.12 does not
   have them (each named).

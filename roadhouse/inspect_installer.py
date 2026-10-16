@@ -33,7 +33,8 @@ import zlib
 UKI = "usr/install/arm64/vmlinuz.efi"
 DTB = "overlay/artifacts/arm64/dtb/rockchip/rk3588-orangepi-5-plus.dtb"
 
-# Options the BSP build exists for, plus the SoC glue it cannot boot without.
+# Options behind nectar's four device paths (/dev/mpp_service, /dev/rga,
+# /dev/dri, /dev/dma_heap), plus the SoC glue the board cannot boot without.
 BSP_OPTIONS = {
     "CONFIG_ROCKCHIP_MPP_SERVICE": "y",
     "CONFIG_ROCKCHIP_MPP_RKVDEC2": "y",
@@ -50,6 +51,11 @@ BSP_OPTIONS = {
     "CONFIG_REGULATOR_RK860X": "y",
     "CONFIG_ROCKCHIP_IOMMU": "y",
     "CONFIG_DMABUF_HEAPS_SYSTEM": "y",
+    "CONFIG_DMABUF_HEAPS_CMA": "y",
+    # /dev/dri: the BSP Rockchip display driver registers the render node.
+    "CONFIG_DRM": "y",
+    "CONFIG_DRM_ROCKCHIP": "y",
+    "CONFIG_ROCKCHIP_VOP2": "y",
 }
 
 # A sample of what Talos needs at runtime and enforces at build time.
@@ -80,6 +86,7 @@ DTB_COMPATIBLES = [
     b"rockchip,vpu-encoder-v2",
     b"rockchip,rga3_core0",
     b"rockchip,rga2_core0",
+    b"rockchip,display-subsystem",
 ]
 
 EXTENSIONS = ["iscsi-tools", "util-linux-tools", "spin"]
