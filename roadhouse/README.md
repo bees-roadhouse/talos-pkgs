@@ -1,5 +1,13 @@
 # Talos on the Rockchip BSP kernel (RK3588)
 
+> **Dead end, kept on purpose (2026-10-16).** This branch builds Rockchip's BSP
+> 6.1 kernel for Talos v1.14.0, and the kernel builds, but Talos cannot run on
+> it: machined's `/etc` overlay needs `FSCONFIG_SET_FD` with `lowerdir+`
+> (Linux 6.8), and 6.1's overlayfs is not even on the new mount API (6.5).
+> Booted in QEMU it stops with `operation not supported: key="lowerdir+"`.
+> The work continues on BSP 6.12 in the default branch's PR (#1); see
+> brh-infra#442. Do not build on this branch.
+
 This fork of [siderolabs/pkgs](https://github.com/siderolabs/pkgs) builds Talos
 Linux v1.14.0 with Rockchip's BSP 6.1 kernel instead of mainline 6.18, for the
 Bee's Roadhouse Orange Pi 5 Plus nodes (talos-4, talos-5). The reason is
