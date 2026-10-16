@@ -98,7 +98,7 @@ jobs:
           TAG: ${{ needs.kernel.outputs.tag }}
           KERNEL: ${{ needs.kernel.outputs.ref }}
         run: |
-          docker buildx build roadhouse/overlay \
+          docker buildx build roadhouse/overlay --file roadhouse/overlay/Containerfile \
             --platform linux/arm64,linux/amd64 \
             --build-arg KERNEL_IMAGE="${KERNEL}" \
             --build-arg BASE_OVERLAY="${BASE_OVERLAY}" \
