@@ -1,0 +1,107 @@
+# Rockchip BSP 6.1 options layered on top of Talos's own arm64 config.
+# Scope: headless RK3588 node (Orange Pi 5 Plus) with MPP and RGA for nectar's
+# transcoder. Display, GPU, NPU, camera, audio and wireless are left off on
+# purpose: none of them are used, and every vendor driver turned on is another
+# gcc-first tree that has to survive Talos's clang build.
+
+CONFIG_LOCALVERSION="-rockchip-talos"
+
+# SoC glue the BSP gates behind its own CPU_* symbols; mainline names such as
+# CLK_RK3588, MFD_RK8XX_SPI and PCIE_ROCKCHIP_DW_HOST do not exist in this tree.
+CONFIG_CPU_RK3588=y
+CONFIG_ROCKCHIP_CPUINFO=y
+CONFIG_ROCKCHIP_IOMUX=y
+CONFIG_ROCKCHIP_OPP=y
+CONFIG_ROCKCHIP_PVTM=y
+CONFIG_ROCKCHIP_SYSTEM_MONITOR=y
+CONFIG_ROCKCHIP_IPA=y
+CONFIG_ROCKCHIP_SIP=y
+CONFIG_ENERGY_MODEL=y
+CONFIG_ARM_ROCKCHIP_CPUFREQ=y
+CONFIG_ARM_ROCKCHIP_BUS_DEVFREQ=y
+CONFIG_DEVFREQ_THERMAL=y
+CONFIG_THERMAL_GOV_POWER_ALLOCATOR=y
+CONFIG_SYSCON_REBOOT_MODE=y
+
+# DDR frequency scaling needs Rockchip's own bl31; the Pis boot mainline TF-A
+# from the sbc-rockchip u-boot, so leave DMC devfreq off rather than have it
+# fail at probe.
+# CONFIG_ARM_ROCKCHIP_DMC_DEVFREQ is not set
+
+# PMIC (RK806 on SPI) and the RK8602 CPU-rail regulators.
+CONFIG_MFD_RK806_SPI=y
+CONFIG_MFD_RK808=y
+CONFIG_REGULATOR_RK806=y
+CONFIG_REGULATOR_RK808=y
+CONFIG_REGULATOR_RK860X=y
+CONFIG_PINCTRL_RK806=y
+
+# PCIe (NVMe on PCIe3, the two RTL8125 NICs on PCIe2) under its BSP name.
+CONFIG_PCIE_DW_ROCKCHIP=y
+CONFIG_SPI_ROCKCHIP_SFC=y
+
+# Media: MPP (/dev/mpp_service) and multi-core RGA (/dev/rga).
+CONFIG_ROCKCHIP_MPP_SERVICE=y
+CONFIG_ROCKCHIP_MPP_RKVDEC=y
+CONFIG_ROCKCHIP_MPP_RKVDEC2=y
+CONFIG_ROCKCHIP_MPP_RKVENC=y
+CONFIG_ROCKCHIP_MPP_RKVENC2=y
+CONFIG_ROCKCHIP_MPP_VDPU1=y
+CONFIG_ROCKCHIP_MPP_VEPU1=y
+CONFIG_ROCKCHIP_MPP_VDPU2=y
+CONFIG_ROCKCHIP_MPP_VEPU2=y
+CONFIG_ROCKCHIP_MPP_IEP2=y
+CONFIG_ROCKCHIP_MPP_JPGDEC=y
+CONFIG_ROCKCHIP_MPP_JPGENC=y
+CONFIG_ROCKCHIP_MPP_AV1DEC=y
+CONFIG_ROCKCHIP_MPP_VDPP=y
+CONFIG_ROCKCHIP_MULTI_RGA=y
+CONFIG_DMABUF_HEAPS_CMA=y
+
+# Off: DRM as a whole, so the vendor display stack (VOP2/HDMI), the GPU and
+# every DRM driver Talos carries for PCIe cards. Under Talos's clang the BSP's
+# DRM core does not build (drm_gpuvm, the panthor backport and amdgpu all fail),
+# the console is serial (ttyS2 at 1500000), and nectar needs MPP and RGA, not
+# /dev/dri.
+# CONFIG_DRM is not set
+# CONFIG_MALI_BIFROST is not set
+# CONFIG_MALI_VALHALL is not set
+# CONFIG_ROCKCHIP_RKNPU is not set
+
+# Hardening that 6.1 still carries and Talos's 6.18 config no longer names
+# (removed upstream in 6.6); kernel-hardening-checker asks for it on 6.1.
+CONFIG_DEBUG_CREDENTIALS=y
+
+# This kernel only ever boots RK3588 boards. Every other SoC family Talos's
+# generic arm64 kernel carries is switched off: their drivers are untested in
+# the vendor tree (the Meson HDMI driver does not even compile against the
+# BSP's dw-hdmi), and dropping them shortens the build.
+# CONFIG_ARCH_ACTIONS is not set
+# CONFIG_ARCH_SUNXI is not set
+# CONFIG_ARCH_BCM is not set
+# CONFIG_ARCH_BCM2835 is not set
+# CONFIG_ARCH_BCM_IPROC is not set
+# CONFIG_ARCH_BRCMSTB is not set
+# CONFIG_ARCH_BERLIN is not set
+# CONFIG_ARCH_BITMAIN is not set
+# CONFIG_ARCH_K3 is not set
+# CONFIG_ARCH_LG1K is not set
+# CONFIG_ARCH_HISI is not set
+# CONFIG_ARCH_MEDIATEK is not set
+# CONFIG_ARCH_MESON is not set
+# CONFIG_ARCH_MVEBU is not set
+# CONFIG_ARCH_NXP is not set
+# CONFIG_ARCH_LAYERSCAPE is not set
+# CONFIG_ARCH_MXC is not set
+# CONFIG_ARCH_QCOM is not set
+# CONFIG_ARCH_REALTEK is not set
+# CONFIG_ARCH_RENESAS is not set
+# CONFIG_ARCH_SEATTLE is not set
+# CONFIG_ARCH_SYNQUACER is not set
+# CONFIG_ARCH_TEGRA is not set
+# CONFIG_ARCH_SPRD is not set
+# CONFIG_ARCH_THUNDER is not set
+# CONFIG_ARCH_THUNDER2 is not set
+# CONFIG_ARCH_VEXPRESS is not set
+# CONFIG_ARCH_XGENE is not set
+# CONFIG_ARCH_ZYNQMP is not set

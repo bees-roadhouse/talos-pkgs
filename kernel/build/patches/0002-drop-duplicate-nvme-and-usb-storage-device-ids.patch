@@ -1,0 +1,64 @@
+Drop device-table entries that duplicate an earlier one in the same driver.
+
+Talos builds its rootfs module set with `depmod -w` and fails the build on
+any depmod output. This 6.1 tree has two NVMe IDs listed twice in
+nvme/host/pci.c, and two USB IDs in unusual_devs.h that unusual_uas.h
+(which unusual_devs.h includes) also lists, so depmod warns "duplicate
+module alias" for nvme and usb-storage.
+
+No behaviour changes: PCI and USB ID matching take the first entry, so the
+removed NVMe entries were never used, and the removed USB entries carry the
+same flags as the unusual_uas.h entries that remain.
+
+--- a/drivers/nvme/host/pci.c
++++ b/drivers/nvme/host/pci.c
+@@ -3653,8 +3653,6 @@
+ 		.driver_data = NVME_QUIRK_NO_DEEPEST_PS, },
+ 	{ PCI_DEVICE(0xc0a9, 0x540a),   /* Crucial P2 */
+ 		.driver_data = NVME_QUIRK_BOGUS_NID, },
+-	{ PCI_DEVICE(0x1d97, 0x2263), /* Lexar NM610 */
+-		.driver_data = NVME_QUIRK_BOGUS_NID, },
+ 	{ PCI_DEVICE(0x1d97, 0x1d97), /* Lexar NM620 */
+ 		.driver_data = NVME_QUIRK_BOGUS_NID, },
+ 	{ PCI_DEVICE(0x1d97, 0x2269), /* Lexar NM760 */
+@@ -3662,8 +3660,6 @@
+ 				NVME_QUIRK_IGNORE_DEV_SUBNQN, },
+ 	{ PCI_DEVICE(0x10ec, 0x5763), /* TEAMGROUP T-FORCE CARDEA ZERO Z330 SSD */
+ 		.driver_data = NVME_QUIRK_BOGUS_NID, },
+-	{ PCI_DEVICE(0x1e4b, 0x1602), /* HS-SSD-FUTURE 2048G  */
+-		.driver_data = NVME_QUIRK_BOGUS_NID, },
+ 	{ PCI_DEVICE(0x10ec, 0x5765), /* TEAMGROUP MP33 2TB SSD */
+ 		.driver_data = NVME_QUIRK_BOGUS_NID, },
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_AMAZON, 0x0061),
+--- a/drivers/usb/storage/unusual_devs.h
++++ b/drivers/usb/storage/unusual_devs.h
+@@ -2176,13 +2176,6 @@
+ 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
+ 		US_FL_BROKEN_FUA ),
+ 
+-/* Reported by David Kozub <zub@linux.fjfi.cvut.cz> */
+-UNUSUAL_DEV(0x152d, 0x0578, 0x0000, 0x9999,
+-		"JMicron",
+-		"JMS567",
+-		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
+-		US_FL_BROKEN_FUA),
+-
+ /*
+  * Reported by Alexandre Oliva <oliva@lsd.ic.unicamp.br>
+  * JMicron responds to USN and several other SCSI ioctls with a
+@@ -2452,15 +2445,6 @@
+ 		"Micro Mini 1GB",
+ 		USB_SC_DEVICE, USB_PR_DEVICE, NULL, US_FL_NOT_LOCKABLE ),
+ 
+-/* "G-DRIVE" external HDD hangs on write without these.
+- * Patch submitted by Alexander Kappner <agk@godking.net>
+- */
+-UNUSUAL_DEV(0x4971, 0x8024, 0x0000, 0x9999,
+-		"SimpleTech",
+-		"External HDD",
+-		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
+-		US_FL_ALWAYS_SYNC),
+-
+ /*
+  * Nick Bowler <nbowler@elliptictech.com>
+  * SCSI stack spams (otherwise harmless) error messages.

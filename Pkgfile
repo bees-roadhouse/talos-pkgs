@@ -103,10 +103,15 @@ vars:
   kspp_sha256: 0dc61ebf01f0dd1d0d2204432235fb2470bcf2ec020172c30a9d1c14f103f032
   kspp_sha512: 2b40c41ed0347a339053aef61c838b5131dd583fb0d1ac8f3361040361ba868724ad16dfdc13023ff2b0f51f32c0aba605316d5d76f9fc6c1d50d90b4ceedead
 
-  # renovate: datasource=git-tags extractVersion=^v(?<version>.*)$ depName=git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
-  linux_version: 6.18.48
-  linux_sha256: 5ebdadb10a4b5708fc6b1c457764a110bc49f8150cc3502c59b921ead8c6fc8c
-  linux_sha512: 711e08958a8a4c39206018d0222687dc5a01845a9226ae44f7d3f0cfcea76caae041cee958dfe8c0cfc8c728a5a2241b29018ccf1b7593b9615c27057d2628c4
+  # bees-roadhouse: the kernel is Rockchip's BSP 6.1 tree as Armbian carries it
+  # (branch rk-6.1-rkr7.2, which has the MPP and RGA drivers and the Orange Pi 5
+  # Plus device tree), pinned to a commit. linux_version is the tree's own
+  # VERSION.PATCHLEVEL.SUBLEVEL and only feeds the SBOM.
+  linux_version: 6.1.172
+  linux_bsp_repo: armbian/linux-rockchip
+  linux_bsp_ref: 453efc7fb4ab346541693620d21e3cc4b73b8d3c
+  linux_sha256: 36d3afb80a82873b1fc89ed01c441686c8324d1aac4280b513896c5e96e03c18
+  linux_sha512: 5445a7a319fced79673244646e0aae1e4f2a6ed040fdbc8b610791c07f6695a9018c02d1799a7526efa8049dec21c7e2bbb1c277378c8804b8d567e7ba530090
 
   # renovate: datasource=git-tags extractVersion=^libaio-(?<version>.*)$ depName=https://pagure.io/libaio.git
   libaio_version: 0.3.113

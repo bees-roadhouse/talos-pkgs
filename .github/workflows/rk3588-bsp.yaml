@@ -1,0 +1,219 @@
+# Builds Talos v1.14.0 with Rockchip's BSP 6.1 kernel for the Orange Pi 5 Plus
+# nodes, natively on GitHub's arm64 runners (free for public repositories; the
+# same build under QEMU on an x86 host takes many hours).
+#
+#   kernel     pkgs' kernel target from this tree      -> talos-rk3588-bsp/kernel
+#   overlay    sbc-rockchip v0.2.1 with the BSP dtb    -> talos-rk3588-bsp/sbc-rockchip
+#   imager     siderolabs/talos v1.14.0 + that kernel  -> talos-rk3588-bsp/imager
+#   installer  imager + overlay + our three extensions -> talos-rk3588-bsp/installer
+#
+# Every image is pushed by tag and then referred to by digest from the next job.
+# Upstream's workflows run on Sidero's self-hosted runners and were removed.
+name: rk3588-bsp
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: rk3588-bsp-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  TALOS_VERSION: v1.14.0
+  IMAGE_PREFIX: ghcr.io/bees-roadhouse/talos-rk3588-bsp
+  # The overlay and extensions Talos v1.14.0's image factory resolves for the
+  # nodes' current schematic (ghcr.io/siderolabs/overlays and extensions at v1.14.0).
+  BASE_OVERLAY: ghcr.io/siderolabs/sbc-rockchip:v0.2.1@sha256:9ce1d1d2ca1c0866bafd9728bd12eb0ef70b386318b033db2c841ce35e33b882
+  EXTENSIONS: >-
+    ghcr.io/siderolabs/iscsi-tools:v0.2.0@sha256:ab5025569de4758d23aa73a107be910f56015dec0bdb9fb481c0bee83e3e69ec
+    ghcr.io/siderolabs/util-linux-tools:2.42.2@sha256:25da7c8809ec2663f4851f2faff7649caf56c94602c064a8ef6465475290e0bc
+    ghcr.io/siderolabs/spin:v0.25.1@sha256:c4b70eb85061847af749772dba3955749235445eb939edbecddbd9bd4c957304
+
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 300
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      ref: ${{ steps.push.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache /usr/local/share/boost || true
+          df -h /
+      - id: tag
+        name: Tag
+        run: |
+          linux_version=$(awk '/^  linux_version:/ {print $2}' Pkgfile)
+          echo "tag=${TALOS_VERSION}-bsp${linux_version}-$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: imjasonh/setup-crane@v0.4
+      - id: push
+        name: Build and push the kernel
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          start=$(date +%s)
+          make target-kernel PLATFORM=linux/arm64 PROGRESS=plain \
+            TARGET_ARGS="--tag=${IMAGE_PREFIX}/kernel:${TAG} --push=true"
+          echo "kernel build took $(( ($(date +%s) - start) / 60 )) min"
+          digest=$(crane digest "${IMAGE_PREFIX}/kernel:${TAG}")
+          echo "ref=${IMAGE_PREFIX}/kernel:${TAG}@${digest}" >> "$GITHUB_OUTPUT"
+          echo "kernel: ${IMAGE_PREFIX}/kernel:${TAG}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+          df -h /
+
+  overlay:
+    needs: kernel
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      ref: ${{ steps.push.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: imjasonh/setup-crane@v0.4
+      - id: push
+        name: Build and push the overlay
+        env:
+          TAG: ${{ needs.kernel.outputs.tag }}
+          KERNEL: ${{ needs.kernel.outputs.ref }}
+        run: |
+          docker buildx build roadhouse/overlay \
+            --platform linux/arm64,linux/amd64 \
+            --build-arg KERNEL_IMAGE="${KERNEL}" \
+            --build-arg BASE_OVERLAY="${BASE_OVERLAY}" \
+            --provenance=false --sbom=false \
+            --tag "${IMAGE_PREFIX}/sbc-rockchip:${TAG}" --push
+          digest=$(crane digest "${IMAGE_PREFIX}/sbc-rockchip:${TAG}")
+          echo "ref=${IMAGE_PREFIX}/sbc-rockchip:${TAG}@${digest}" >> "$GITHUB_OUTPUT"
+          echo "overlay: ${IMAGE_PREFIX}/sbc-rockchip:${TAG}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+
+  imager:
+    needs: kernel
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 300
+    outputs:
+      ref: ${{ steps.push.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: pkgs
+      - uses: actions/checkout@v4
+        with:
+          repository: siderolabs/talos
+          ref: ${{ env.TALOS_VERSION }}
+          path: talos
+          fetch-depth: 0
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache /usr/local/share/boost || true
+          df -h /
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: imjasonh/setup-crane@v0.4
+      - name: Fit Talos's module list to the BSP kernel
+        env:
+          KERNEL: ${{ needs.kernel.outputs.ref }}
+        run: |
+          mkdir -p /tmp/kernel
+          crane export --platform linux/arm64 "${KERNEL}" - | tar -x -C /tmp/kernel usr/lib/modules
+          moddir=$(ls -d /tmp/kernel/usr/lib/modules/*)
+          python3 pkgs/roadhouse/talos/modules-arm64.py talos/hack/modules-arm64.txt "${moddir}" > /tmp/modules-arm64.txt
+          cp /tmp/modules-arm64.txt talos/hack/modules-arm64.txt
+      - id: push
+        name: Build and push the imager
+        working-directory: talos
+        env:
+          TAG: ${{ needs.kernel.outputs.tag }}
+          KERNEL: ${{ needs.kernel.outputs.ref }}
+        run: |
+          # TAG stays the release tag so the binaries report v1.14.0, and
+          # USERNAME stays siderolabs so every image reference compiled into
+          # them is upstream's; only the output name and tag are ours.
+          start=$(date +%s)
+          make imager PLATFORM=linux/arm64 INSTALLER_ARCH=targetarch PROGRESS=plain \
+            PKG_KERNEL="${KERNEL}" \
+            TAG="${TALOS_VERSION}" TAG_SUFFIX_OUT="${TAG#"${TALOS_VERSION}"}" \
+            REGISTRY_AND_USERNAME="${IMAGE_PREFIX}" PUSH=true
+          echo "imager build took $(( ($(date +%s) - start) / 60 )) min"
+          digest=$(crane digest "${IMAGE_PREFIX}/imager:${TAG}")
+          echo "ref=${IMAGE_PREFIX}/imager:${TAG}@${digest}" >> "$GITHUB_OUTPUT"
+          echo "imager: ${IMAGE_PREFIX}/imager:${TAG}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+
+  installer:
+    needs: [kernel, overlay, imager]
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      ref: ${{ steps.push.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: imjasonh/setup-crane@v0.4
+      - id: push
+        name: Build and push the installer
+        env:
+          TAG: ${{ needs.kernel.outputs.tag }}
+          IMAGER: ${{ needs.imager.outputs.ref }}
+          OVERLAY: ${{ needs.overlay.outputs.ref }}
+        run: |
+          # Same schematic as the nodes run today (factory 8763e5e4...): the
+          # orangepi-5-plus overlay with spi_boot, two extra kernel args and
+          # three extensions. The base installer is upstream's v1.14.0.
+          ext_args=()
+          for e in ${EXTENSIONS}; do ext_args+=(--system-extension-image "$e"); done
+          mkdir -p _out
+          docker run --rm --privileged --network=host -v /dev:/dev -v "$PWD/_out:/out" "${IMAGER}" installer \
+            --arch arm64 \
+            --base-installer-image "ghcr.io/siderolabs/installer-base:${TALOS_VERSION}" \
+            --overlay-image "${OVERLAY}" \
+            --overlay-name orangepi-5-plus \
+            --overlay-option spi_boot=true \
+            --extra-kernel-arg nvme_core.default_ps_max_latency_us=0 \
+            --extra-kernel-arg pcie_aspm=off \
+            "${ext_args[@]}"
+          ls -la _out
+          crane push _out/installer-arm64.tar "${IMAGE_PREFIX}/installer:${TAG}"
+          digest=$(crane digest "${IMAGE_PREFIX}/installer:${TAG}")
+          echo "ref=${IMAGE_PREFIX}/installer:${TAG}@${digest}" >> "$GITHUB_OUTPUT"
+          echo "installer: ${IMAGE_PREFIX}/installer:${TAG}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+
+  verify:
+    needs: installer
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: imjasonh/setup-crane@v0.4
+      - name: Inspect the installer
+        env:
+          INSTALLER: ${{ needs.installer.outputs.ref }}
+        run: |
+          sudo apt-get install -y -qq zstd >/dev/null
+          roadhouse/verify-installer.sh "${INSTALLER}" | tee -a "$GITHUB_STEP_SUMMARY"

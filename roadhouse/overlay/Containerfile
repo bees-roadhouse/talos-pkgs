@@ -1,0 +1,12 @@
+# The sbc-rockchip overlay Talos v1.14.0 ships for orangepi-5-plus, with one
+# file changed: the device tree. Upstream's dtb is built from mainline 6.18 and
+# does not describe the BSP kernel's vendor bindings (MPP, RGA, the RK806 and
+# RK860x regulators as the BSP drives them), so the BSP kernel needs the BSP's
+# own dtb. The installer binary, u-boot and every other artifact are upstream's.
+ARG KERNEL_IMAGE
+ARG BASE_OVERLAY=ghcr.io/siderolabs/sbc-rockchip:v0.2.1@sha256:9ce1d1d2ca1c0866bafd9728bd12eb0ef70b386318b033db2c841ce35e33b882
+
+FROM --platform=linux/arm64 ${KERNEL_IMAGE} AS kernel
+
+FROM ${BASE_OVERLAY}
+COPY --from=kernel /dtb/rockchip/rk3588-orangepi-5-plus.dtb /artifacts/arm64/dtb/rockchip/rk3588-orangepi-5-plus.dtb
