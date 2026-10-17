@@ -135,6 +135,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: imjasonh/setup-crane@v0.4
+      - name: Patch Talos (the BSP dtb in the UKI's .dtb section)
+        run: |
+          for p in pkgs/roadhouse/talos/*.patch; do
+            git -C talos apply -p1 "$PWD/$p"
+            echo "applied $p"
+          done
       - name: Fit Talos's module list to the BSP kernel
         env:
           KERNEL: ${{ needs.kernel.outputs.ref }}
@@ -165,7 +171,7 @@ jobs:
           echo "imager: ${IMAGE_PREFIX}/imager:${TAG}@${digest}" >> "$GITHUB_STEP_SUMMARY"
 
   installer:
-    needs: [kernel, overlay, imager]
+    needs: [kernel, imager]
     # Gated: an installer in the registry is one `talosctl upgrade` from a
     # node, so it is only published while the repository variable
     # RK3588_BSP_INSTALLER is true, which means the kernel has reached Talos
@@ -187,31 +193,88 @@ jobs:
         env:
           TAG: ${{ needs.kernel.outputs.tag }}
           IMAGER: ${{ needs.imager.outputs.ref }}
-          OVERLAY: ${{ needs.overlay.outputs.ref }}
+          KERNEL: ${{ needs.kernel.outputs.ref }}
         run: |
+          # The overlay is upstream's, unchanged, so the one dtb u-boot hands
+          # every boot entry from the EFI partition stays mainline's, and an
+          # A/B rollback to the mainline entry boots on the dtb it was built
+          # for. talos-5 did not survive the overlay with the BSP dtb in it on
+          # 2026-10-17 (brh-infra#442). The BSP dtb rides inside this UKI's
+          # .dtb section instead (roadhouse/talos/0001-uki-dtb-section.patch),
+          # which systemd-stub installs for this entry only.
+          mkdir -p _out
+          crane export --platform linux/arm64 "${KERNEL}" - | tar -x -C _out dtb/rockchip/rk3588-orangepi-5-plus.dtb
+          cp _out/dtb/rockchip/rk3588-orangepi-5-plus.dtb _out/bsp.dtb
           # Same schematic as the nodes run today (factory 8763e5e4...): the
           # orangepi-5-plus overlay with spi_boot, two extra kernel args and
           # three extensions. The base installer is upstream's v1.14.0.
           ext_args=()
           for e in ${EXTENSIONS}; do ext_args+=(--system-extension-image "$e"); done
-          mkdir -p _out
           # key=value options reach the overlay as strings, and spi_boot is a
           # bool, so the options go in as YAML (the "@file" form).
           echo "spi_boot: true" > _out/overlay-options.yaml
-          docker run --rm --privileged --network=host -v /dev:/dev -v "$PWD/_out:/out" "${IMAGER}" installer \
+          docker run --rm --privileged --network=host -v /dev:/dev -v "$PWD/_out:/out" \
+            -e ROADHOUSE_UKI_DTB=/out/bsp.dtb "${IMAGER}" installer \
             --arch arm64 \
             --base-installer-image "ghcr.io/siderolabs/installer-base:${TALOS_VERSION}" \
-            --overlay-image "${OVERLAY}" \
+            --overlay-image "${BASE_OVERLAY}" \
             --overlay-name orangepi-5-plus \
             --overlay-option @/out/overlay-options.yaml \
             --extra-kernel-arg nvme_core.default_ps_max_latency_us=0 \
             --extra-kernel-arg pcie_aspm=off \
+            --extra-kernel-arg earlycon=uart8250,mmio32,0xfeb50000 \
             "${ext_args[@]}"
           ls -la _out
           crane push _out/installer-arm64.tar "${IMAGE_PREFIX}/installer:${TAG}"
           digest=$(crane digest "${IMAGE_PREFIX}/installer:${TAG}")
           echo "ref=${IMAGE_PREFIX}/installer:${TAG}@${digest}" >> "$GITHUB_OUTPUT"
           echo "installer: ${IMAGE_PREFIX}/installer:${TAG}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+
+  usb-image:
+    # A bootable image for a USB stick, to prove the BSP kernel on the board
+    # before any node installs it (brh-infra#442): SPI u-boot boots the stick,
+    # the stick's EFI partition carries upstream's mainline dtb, and the UKI
+    # carries the BSP dtb, which is exactly the installer's layout. Debug
+    # kernel args: an early console on UART2, panic=0 (CONFIG_PANIC_TIMEOUT is
+    # -1, so a panic otherwise reboots before anything is read), and
+    # initcall_debug to name the driver a hang stops in. Never pushed to a
+    # registry: it goes up as a workflow artifact, and nothing can install it.
+    needs: [kernel, imager]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: imjasonh/setup-crane@v0.4
+      - name: Build the metal image
+        env:
+          IMAGER: ${{ needs.imager.outputs.ref }}
+          KERNEL: ${{ needs.kernel.outputs.ref }}
+        run: |
+          ext_args=()
+          for e in ${EXTENSIONS}; do ext_args+=(--system-extension-image "$e"); done
+          mkdir -p _out
+          crane export --platform linux/arm64 "${KERNEL}" - | tar -x -C _out dtb/rockchip/rk3588-orangepi-5-plus.dtb
+          cp _out/dtb/rockchip/rk3588-orangepi-5-plus.dtb _out/bsp.dtb
+          echo "spi_boot: true" > _out/overlay-options.yaml
+          docker run --rm --privileged --network=host -v /dev:/dev -v "$PWD/_out:/out" \
+            -e ROADHOUSE_UKI_DTB=/out/bsp.dtb "${IMAGER}" metal \
+            --arch arm64 \
+            --overlay-image "${BASE_OVERLAY}" \
+            --overlay-name orangepi-5-plus \
+            --overlay-option @/out/overlay-options.yaml \
+            --extra-kernel-arg nvme_core.default_ps_max_latency_us=0 \
+            --extra-kernel-arg pcie_aspm=off \
+            --extra-kernel-arg earlycon=uart8250,mmio32,0xfeb50000 \
+            --extra-kernel-arg panic=0 \
+            --extra-kernel-arg keep_bootcon \
+            --extra-kernel-arg ignore_loglevel \
+            --extra-kernel-arg initcall_debug \
+            "${ext_args[@]}"
+          ls -la _out
+          sha256sum _out/metal-arm64.raw* | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: talos-rk3588-bsp-usb-test
+          path: _out/metal-arm64.raw*
+          retention-days: 14
 
   verify:
     needs: installer

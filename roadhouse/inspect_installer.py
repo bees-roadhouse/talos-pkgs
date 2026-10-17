@@ -8,8 +8,9 @@ linux/arm64 <ref> installer.tar`) and checks, from the bytes alone:
   - the kernel config, recovered from the same payload's IKCONFIG blob: the
     MPP and RGA drivers, the RK3588 SoC glue, and a sample of the options
     Talos needs (the full hardening set is enforced by the pkgs build itself);
-  - the orangepi-5-plus dtb the overlay will install, and that it describes
-    the MPP service, the encoder and decoder cores and the RGA cores;
+  - that the dtb the overlay installs on the EFI partition is mainline's, so
+    an A/B rollback still boots, and that the UKI's .dtb section carries the
+    BSP dtb, describing the MPP service, its cores and the RGA cores;
   - the UKI's .cmdline, and the three system extensions in its initrd.
 
 The upstream installer for the nodes' current schematic is the negative
@@ -203,7 +204,8 @@ def main() -> int:
     cmdlines = [blob.rstrip(b"\0").decode() for name, blob in sections if name == ".cmdline"]
     for c in cmdlines:
         print(f"      cmdline: {c}")
-    for arg in ("console=ttyS2,1500000", "nvme_core.default_ps_max_latency_us=0", "pcie_aspm=off"):
+    for arg in ("console=ttyS2,1500000", "nvme_core.default_ps_max_latency_us=0", "pcie_aspm=off",
+                "earlycon=uart8250,mmio32,0xfeb50000"):
         check(bool(cmdlines) and all(arg in c.split() for c in cmdlines), f"every boot profile's cmdline has {arg}")
 
     image = zboot_payload(first[".linux"])
@@ -218,15 +220,27 @@ def main() -> int:
     for opt, want in {**BSP_OPTIONS, **TALOS_OPTIONS}.items():
         check(cfg.get(opt) == want, f"{opt}={want} (is {cfg.get(opt, 'unset')})")
 
+    # Two dtbs, two jobs (brh-infra#442). The overlay's dtb is the one file
+    # u-boot hands every boot entry from the EFI partition, so it must stay
+    # mainline's: talos-5 crash-looped on 2026-10-17 because the BSP dtb sat
+    # there and the A/B rollback's mainline kernel booted against it too. The
+    # BSP dtb rides in the UKI's .dtb section, for this entry only.
     if DTB in files:
         dtb = files[DTB]
-        check(dtb[:4] == b"\xd0\x0d\xfe\xed", "dtb has the FDT magic")
+        check(dtb[:4] == b"\xd0\x0d\xfe\xed", "EFI-partition dtb has the FDT magic")
+        check(b"xunlong,orangepi-5-plus" in dtb and b"Orange Pi 5 Plus\0" in dtb,
+              "EFI-partition dtb is mainline's Orange Pi 5 Plus (xunlong,orangepi-5-plus)")
+        check(b"rockchip,mpp-service" not in dtb, "EFI-partition dtb is not the BSP's (no rockchip,mpp-service)")
+
+    uki_dtb = first.get(".dtb", b"")
+    check(uki_dtb[:4] == b"\xd0\x0d\xfe\xed", "UKI has a .dtb section with the FDT magic")
+    if uki_dtb[:4] == b"\xd0\x0d\xfe\xed":
         # Mainline spells the board xunlong,orangepi-5-plus; the BSP dts
-        # spells it rockchip,rk3588-orangepi-5-plus. Either, plus the model.
-        board = b"xunlong,orangepi-5-plus" in dtb or b"rockchip,rk3588-orangepi-5-plus" in dtb
-        check(board and b"Orange Pi 5 Plus\0" in dtb, "dtb is the Orange Pi 5 Plus")
+        # spells it rockchip,rk3588-orangepi-5-plus.
+        check(b"rockchip,rk3588-orangepi-5-plus" in uki_dtb and b"Orange Pi 5 Plus\0" in uki_dtb,
+              "UKI .dtb is the BSP's Orange Pi 5 Plus (rockchip,rk3588-orangepi-5-plus)")
         for compat in DTB_COMPATIBLES:
-            check(compat in dtb, f"dtb describes {compat.decode()}")
+            check(compat in uki_dtb, f"UKI .dtb describes {compat.decode()}")
 
     if ".initrd" in first:
         manifest = extensions_yaml(first[".initrd"])
