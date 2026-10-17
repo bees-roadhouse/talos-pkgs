@@ -56,6 +56,9 @@ BSP_OPTIONS = {
     "CONFIG_DRM": "y",
     "CONFIG_DRM_ROCKCHIP": "y",
     "CONFIG_ROCKCHIP_VOP2": "y",
+    # The HDMI PHYs: without them HDMI defers for ever and the DRM device,
+    # /dev/dri included, never binds (see rk3588-bsp.fragment).
+    "CONFIG_PHY_ROCKCHIP_SAMSUNG_HDPTX": "y",
 }
 
 # A sample of what Talos needs at runtime and enforces at build time.
@@ -218,7 +221,10 @@ def main() -> int:
     if DTB in files:
         dtb = files[DTB]
         check(dtb[:4] == b"\xd0\x0d\xfe\xed", "dtb has the FDT magic")
-        check(b"xunlong,orangepi-5-plus" in dtb, "dtb is the Orange Pi 5 Plus")
+        # Mainline spells the board xunlong,orangepi-5-plus; the BSP dts
+        # spells it rockchip,rk3588-orangepi-5-plus. Either, plus the model.
+        board = b"xunlong,orangepi-5-plus" in dtb or b"rockchip,rk3588-orangepi-5-plus" in dtb
+        check(board and b"Orange Pi 5 Plus\0" in dtb, "dtb is the Orange Pi 5 Plus")
         for compat in DTB_COMPATIBLES:
             check(compat in dtb, f"dtb describes {compat.decode()}")
 

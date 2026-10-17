@@ -224,4 +224,8 @@ jobs:
           INSTALLER: ${{ needs.installer.outputs.ref }}
         run: |
           sudo apt-get install -y -qq zstd >/dev/null
-          roadhouse/verify-installer.sh "${INSTALLER}" | tee -a "$GITHUB_STEP_SUMMARY"
+          # pipefail: without it the step takes tee's status, and on
+          # 2026-10-16 it went green while the script had not run at all
+          # ("Permission denied": the file is not executable in git).
+          set -o pipefail
+          bash roadhouse/verify-installer.sh "${INSTALLER}" | tee -a "$GITHUB_STEP_SUMMARY"

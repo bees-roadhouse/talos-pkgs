@@ -67,6 +67,18 @@ CONFIG_DMABUF_HEAPS_CMA=y
 CONFIG_DRM=y
 CONFIG_DRM_ROCKCHIP=y
 CONFIG_ROCKCHIP_VOP2=y
+# The HDMI PHYs, without which there is no /dev/dri at all. The Orange Pi 5
+# Plus dts enables hdmi0 and hdmi1 with `phys` pointing at the two
+# rockchip,rk3588-hdptx-phy nodes, and ROCKCHIP_DW_HDMI is built in, so
+# rockchip_drm_match_add() makes both HDMI controllers required components of
+# the DRM device. devm_phy_optional_get() only forgives a missing `phys`
+# property: with the property there and no PHY driver it returns
+# -EPROBE_DEFER on every try, HDMI never calls component_add(), and the DRM
+# device (card0 and its render node) never binds. Its dependencies (OF,
+# COMMON_CLK, GENERIC_PHY, MFD_SYSCON) are already set, and nothing depends on
+# it, so this line and the one in config-arm64 are what make-config.sh would
+# produce.
+CONFIG_PHY_ROCKCHIP_SAMSUNG_HDPTX=y
 # CONFIG_DRM_PANTHOR is not set
 # CONFIG_DRM_AMDGPU is not set
 # CONFIG_DRM_RADEON is not set
