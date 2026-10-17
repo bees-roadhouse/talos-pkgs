@@ -25,7 +25,7 @@ BSP trees are older. Booting each in QEMU (`-M virt`, the imager's initramfs):
 | Kernel | Result |
 |---|---|
 | BSP 6.1 (`rk-6.1-rkr7.2`), branch `dead-end/bsp-6.1` | builds; machined stops at `FSCONFIG_SET_FD ... operation not supported: key="lowerdir+"` (6.8). 6.1's overlayfs is not on the new mount API at all (6.5), so this route was dropped. |
-| BSP 6.12 (`rk-6.12-rkr1`) + patches `0003`–`0007` | builds; Talos passes all its boot phases up to the config phase and enters **maintenance mode**: udevd, machined, containerd, auditd and syslogd are healthy and apid waits for a config. |
+| BSP 6.12 (`rk-6.12-rkr1`) + patches `0003`â€“`0007` | builds; Talos passes all its boot phases up to the config phase and enters **maintenance mode**: udevd, machined, containerd, auditd and syslogd are healthy and apid waits for a config. |
 
 What QEMU cannot show: the RK3588 hardware itself (MPP, RGA, VOP2, PCIe,
 the PMIC) and the SPI u-boot booting this kernel. Under QEMU the BSP's
@@ -35,6 +35,31 @@ it asks the firmware for the DRAM map with an SMC at init, and QEMU's virt
 machine has no EL3 to answer it, so the instruction traps. On the board,
 TF-A answers unknown SiP calls with an error, and the driver carries on
 without the map (`rockchip_gem_get_ddr_info()` checks for NULL).
+
+## 2026-10-17: talos-5 and the shared dtb
+
+The first upgrade (installer `d97de86`, to talos-5) installed cleanly and never
+came back: a reset loop, no HDMI, and the A/B fallback looping too. The
+orangepi-5-plus overlay installer writes exactly one file, the dtb at
+`/boot/EFI/dtb/rockchip/rk3588-orangepi-5-plus.dtb`, and u-boot hands that one
+file to whichever GRUB entry boots. With the BSP dtb there, the fallback's
+mainline kernel booted against the vendor device tree as well. So:
+
+- **The EFI partition keeps upstream's mainline dtb**: the installer uses the
+  upstream sbc-rockchip overlay, unchanged.
+- **The BSP dtb rides inside the BSP UKI's `.dtb` section**
+  (`talos/0001-uki-dtb-section.patch`, applied to Talos in the imager job:
+  `ROADHOUSE_UKI_DTB` names the file). systemd-stub 261 installs it as the FDT
+  for that entry only.
+- **The kernel cmdline gains `earlycon=uart8250,mmio32,0xfeb50000`** (UART2).
+- **`usb-image`** builds a metal image with the same layout plus
+  `panic=0 keep_bootcon ignore_loglevel initcall_debug`, as a workflow
+  artifact, to prove the BSP kernel on the board from a USB stick before any
+  node installs it. `CONFIG_PANIC_TIMEOUT=-1` otherwise reboots on any early
+  panic before a line can be read, and the dtb enables the dw watchdog.
+
+Why the BSP entry itself reset is still unknown; the serial console on the
+next attempt is the way to see it.
 
 ## What changed against pkgs
 
@@ -79,7 +104,7 @@ kernel takes about 45 minutes), pushes to
 | Image | What it is |
 |---|---|
 | `kernel` | this tree's `kernel` target |
-| `sbc-rockchip` | upstream's sbc-rockchip v0.2.1 overlay with the BSP dtb swapped in (`overlay/Containerfile`) |
+| `sbc-rockchip` | upstream's sbc-rockchip v0.2.1 overlay with the BSP dtb swapped in (`overlay/Containerfile`). **No longer used by the installer** (2026-10-17, above); kept until the board proves the new layout |
 | `imager` | siderolabs/talos v1.14.0 built against that kernel; `hack/modules-arm64.txt` fitted to the BSP module tree by `talos/modules-arm64.py` |
 | `installer` | built when the repository variable `RK3588_BSP_INSTALLER` is `true`: the imager's `installer` output with the overlay (`spi_boot: true`), the nodes' two extra kernel args and their three extensions |
 
