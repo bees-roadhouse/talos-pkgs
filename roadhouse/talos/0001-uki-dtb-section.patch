@@ -1,0 +1,59 @@
+diff -ru a/internal/pkg/uki/generate.go b/internal/pkg/uki/generate.go
+--- a/internal/pkg/uki/generate.go	2026-10-17 07:50:41
++++ b/internal/pkg/uki/generate.go	2026-10-17 07:50:41
+@@ -102,6 +102,36 @@
+ 	return nil
+ }
+ 
++// generateDTB embeds a device tree in the UKI's .dtb section when
++// ROADHOUSE_UKI_DTB names one (Bee's Roadhouse talos-pkgs, brh-infra#442).
++// systemd-stub installs it as the FDT for this UKI only, so a kernel that
++// needs its own device tree (the Rockchip BSP kernel) gets it without
++// replacing the single dtb u-boot hands to every boot entry from the EFI
++// partition, and an A/B rollback to a mainline entry still boots on the
++// mainline dtb. Unset, nothing changes.
++func (builder *Builder) generateDTB() error {
++	path := os.Getenv("ROADHOUSE_UKI_DTB")
++	if path == "" {
++		return nil
++	}
++
++	if _, err := os.Stat(path); err != nil {
++		return fmt.Errorf("ROADHOUSE_UKI_DTB: %w", err)
++	}
++
++	builder.sections = append(
++		builder.sections,
++		section{
++			Name:    SectionDTB.String(),
++			Path:    path,
++			Measure: true,
++			Append:  true,
++		},
++	)
++
++	return nil
++}
++
+ func (builder *Builder) generateUname() error {
+ 	// it is not always possible to get the kernel version from the kernel image, so we
+ 	// do a bit of pre-checks
+diff -ru a/internal/pkg/uki/uki.go b/internal/pkg/uki/uki.go
+--- a/internal/pkg/uki/uki.go	2026-10-17 07:50:41
++++ b/internal/pkg/uki/uki.go	2026-10-17 07:50:41
+@@ -137,6 +137,7 @@
+ 		builder.generateCmdline,
+ 		builder.generateUname,
+ 		builder.generateSplash,
++		builder.generateDTB,
+ 		builder.generateKernel,
+ 		builder.generateInitrd,
+ 		builder.generateProfiles,
+@@ -198,6 +199,7 @@
+ 		builder.generateCmdline,
+ 		builder.generateUname,
+ 		builder.generateSplash,
++		builder.generateDTB,
+ 		builder.generatePCRPublicKey,
+ 		builder.generateKernel,
+ 		builder.generateInitrd,

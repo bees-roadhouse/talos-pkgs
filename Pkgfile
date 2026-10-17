@@ -103,10 +103,18 @@ vars:
   kspp_sha256: 0dc61ebf01f0dd1d0d2204432235fb2470bcf2ec020172c30a9d1c14f103f032
   kspp_sha512: 2b40c41ed0347a339053aef61c838b5131dd583fb0d1ac8f3361040361ba868724ad16dfdc13023ff2b0f51f32c0aba605316d5d76f9fc6c1d50d90b4ceedead
 
-  # renovate: datasource=git-tags extractVersion=^v(?<version>.*)$ depName=git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
-  linux_version: 6.18.48
-  linux_sha256: 5ebdadb10a4b5708fc6b1c457764a110bc49f8150cc3502c59b921ead8c6fc8c
-  linux_sha512: 711e08958a8a4c39206018d0222687dc5a01845a9226ae44f7d3f0cfcea76caae041cee958dfe8c0cfc8c728a5a2241b29018ccf1b7593b9615c27057d2628c4
+  # bees-roadhouse: the kernel is Rockchip's BSP tree as Armbian carries it
+  # (branch rk-6.12-rkr1, Armbian's "vendor-next" kernel, which has the MPP and
+  # RGA drivers and the Orange Pi 5 Plus device tree), pinned to a commit.
+  # rk-6.1-rkr7.2 was tried first: it builds, but Talos v1.14's userspace needs
+  # overlayfs mount-API features from 6.8 and later (see roadhouse/README.md).
+  # linux_version is the tree's own VERSION.PATCHLEVEL.SUBLEVEL and only feeds
+  # the SBOM.
+  linux_version: 6.12.69
+  linux_bsp_repo: armbian/linux-rockchip
+  linux_bsp_ref: af5145720c4dbeb485ee0482b00fbd92bcd6f971
+  linux_sha256: dabe035dd54cb81183eca9fcb4b1fdfdc0f68972e86b761882bbb602dad3ba74
+  linux_sha512: eec37e089cab82264713a5d8ebebd6c233365998b06df6a2d11f8b632ffe67c263f66ca792c38afb9331fe630ac783484bcd380016937072b974fcffceaedd03
 
   # renovate: datasource=git-tags extractVersion=^libaio-(?<version>.*)$ depName=https://pagure.io/libaio.git
   libaio_version: 0.3.113

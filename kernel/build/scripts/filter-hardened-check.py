@@ -48,6 +48,12 @@ IGNORE_VIOLATIONS_BY_ARCH = {
         'CONFIG_LSM_MMAP_MIN_ADDR', # on arm64, this can be set only to 32768: https://cateee.net/lkddb/web-lkddb/LSM_MMAP_MIN_ADDR.html
         'CONFIG_RODATA_FULL_DEFAULT_ENABLED', # removed in 6.18
         'CONFIG_KASAN_HW_TAGS', # incompatible with OpenZFS and NVIDIA due to 'GPL-incompatible module nvidia.ko uses GPL-only symbol 'kasan_flag_enabled''
+        # bees-roadhouse: the arm64 kernel is Rockchip's BSP 6.12 tree, which predates these options.
+        'CONFIG_HARDENED_USERCOPY_DEFAULT_ON', # not in 6.12; usercopy hardening itself is on
+        'CONFIG_KSTACK_ERASE', # 6.17 rename of GCC_PLUGIN_STACKLEAK, which is GCC-only on 6.12
+        'CONFIG_KSTACK_ERASE_METRICS', # as above
+        'CONFIG_KSTACK_ERASE_RUNTIME_DISABLE', # as above
+        'CONFIG_ARM64_GCS', # added in 6.13
     },
     'amd64': {
         'CONFIG_CFI_AUTO_DEFAULT', # Disabled due to issues with GPL-incompatible modules
